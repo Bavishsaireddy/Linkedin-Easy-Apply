@@ -91,36 +91,8 @@ class FormFiller:
             return stored_answer
 
         answer = None
-        if "how many" in question:
-            answer = "1"
-        elif "experience" in question:
-            answer = "1"
-        elif "sponsor" in question:
-            answer = "No"
-        elif 'do you ' in question:
-            answer = "Yes"
-        elif "have you " in question:
-            answer = "Yes"
-        elif "US citizen" in question:
-            answer = "Yes"
-        elif "are you " in question:
-            answer = "Yes"
-        elif "salary" in question:
+        if "salary" in question:
             answer = self.salary
-        elif "can you" in question:
-            answer = "Yes"
-        elif "gender" in question:
-            answer = "Male"
-        elif "race" in question:
-            answer = "Wish not to answer"
-        elif "lgbtq" in question:
-            answer = "Wish not to answer"
-        elif "ethnicity" in question:
-            answer = "Wish not to answer"
-        elif "nationality" in question:
-            answer = "Wish not to answer"
-        elif "government" in question:
-            answer = "I do not wish to self-identify"
         elif "are you legally" in question:
             answer = "Yes"
         else:

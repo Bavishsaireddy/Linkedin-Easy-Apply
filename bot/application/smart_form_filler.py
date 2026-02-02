@@ -105,6 +105,12 @@ class SmartFormFiller:
             if not question_text:
                 return None
             
+            # 1. Skip if already filled (e.g., auto-filled by LinkedIn or browser)
+            existing_value = self._extract_filled_value(field)
+            if existing_value and str(existing_value).strip():
+                logger.info(f"Field {field_num}: '{question_text}' already has value. Skipping.", step="process_field")
+                return "skipped_filled"
+
             # Check if required
             is_required = self._is_required_field(field)
             required_marker = "⚠️ REQUIRED" if is_required else ""
@@ -155,34 +161,38 @@ class SmartFormFiller:
         try:
             # Try specific label elements first for cleaner keys
             label_selectors = [
+                "span.fb-dash-form-element__label",
                 ".fb-dash-form-element__label",
                 "label",
                 "legend",
-                ".jobs-easy-apply-form-section__grouping h3"
+                ".jobs-easy-apply-form-section__grouping h3",
+                ".fb-dash-form-element__label-text"
             ]
             
             for selector in label_selectors:
                 label_el = field.locator(selector).first
                 if label_el.count() > 0:
-                    text = label_el.text_content(timeout=500).strip()
+                    text = label_el.inner_text(timeout=500).strip()
                     if text:
                         # Remove "Required" and extra whitespace
                         text = re.sub(r'\s*Required\s*', '', text, flags=re.IGNORECASE)
+                        text = re.sub(r'\s*\*+\s*$', '', text) # Remove trailing asterisks
                         text = " ".join(text.split())
-                        return text[:200]
+                        if len(text) > 3: # Ignore very short labels
+                            return text[:200]
 
-            # Fallback to full text if no specific label found
+            # Fallback to full text but filter out common noise
             text = field.text_content(timeout=1000)
             if text:
                 text = text.strip()
                 text = re.sub(r'\s*Required\s*', '', text, flags=re.IGNORECASE)
-                # Cleanup: remove multi-line repeats which happen on LinkedIn
-                lines = [line.strip() for line in text.split('\n') if line.strip()]
+                # Take first line that looks like a question
+                lines = [line.strip() for line in text.split('\n') if len(line.strip()) > 5]
                 if lines:
-                    return lines[0][:200] # Usually the first line is the question
+                    return lines[0][:200]
         except:
             pass
-        return ""
+        return "Unknown Question"
     
     def _detect_field_type(self, field: Locator) -> str:
         """Detect the type of form field"""
@@ -260,43 +270,43 @@ class SmartFormFiller:
         
         if 'phone' in question_lower or 'mobile' in question_lower:
             if 'country' in question_lower or 'code' in question_lower:
-                return self.profile_data.get('country_code', 'India (+91)')
+                return self.profile_data.get('country_code')
             return self.profile_data.get('phone')
         
         # 3. Experience & Skills
         if 'years' in question_lower:
             if 'python' in question_lower:
-                return self.profile_data.get('years_python', '1')
+                return self.profile_data.get('years_python')
             if 'javascript' in question_lower or 'js' in question_lower:
-                return self.profile_data.get('years_javascript', '0')
+                return self.profile_data.get('years_javascript')
             if 'react' in question_lower:
-                return self.profile_data.get('years_react', '0')
+                return self.profile_data.get('years_react')
             if 'ml' in question_lower or 'machine learning' in question_lower:
-                return self.profile_data.get('years_ml', '1')
-            return self.profile_data.get('years_experience', '1')
+                return self.profile_data.get('years_ml')
+            return self.profile_data.get('years_experience')
         
         # 4. Work Auth & Sponsorship (CRITICAL)
         if 'sponsor' in question_lower or 'visa' in question_lower:
-            return self.profile_data.get('sponsorship_required', 'No')
+            return self.profile_data.get('sponsorship_required')
         
         if 'authorized' in question_lower and 'work' in question_lower:
-            return self.profile_data.get('authorized_to_work', 'Yes')
+            return self.profile_data.get('authorized_to_work')
             
         if 'legally' in question_lower and 'eligible' in question_lower:
-            return self.profile_data.get('authorized_to_work', 'Yes')
+            return self.profile_data.get('authorized_to_work')
 
         # 5. Preferences
         if 'relocate' in question_lower:
-            return self.profile_data.get('willing_to_relocate', 'Yes')
+            return self.profile_data.get('willing_to_relocate')
         
         if 'remote' in question_lower:
-            return 'Yes'
+            return self.profile_data.get('willing_to_work_remote')
         
         # 6. Salary
         if 'salary' in question_lower or 'compensation' in question_lower:
             if 'current' in question_lower:
-                return self.profile_data.get('current_salary', '80000')
-            return self.profile_data.get('expected_salary', '100000')
+                return self.profile_data.get('current_salary')
+            return self.profile_data.get('expected_salary')
         
         # 7. Broad "Yes/No" Patterns
         # REMOVED: No more blind "Yes" defaults to avoid "wrong answers".
@@ -304,90 +314,165 @@ class SmartFormFiller:
             
         # 8. Demographic Defaults (often grouped at end)
         if 'gender' in question_lower:
-            return "Male"
+            return self.profile_data.get('gender')
         if 'race' in question_lower or 'ethnicity' in question_lower:
-            return "Wish not to answer"
+            return self.profile_data.get('race_ethnicity')
         if 'lgbtq' in question_lower or 'disability' in question_lower or 'veteran' in question_lower:
-            return "No"
+            return self.profile_data.get('diverse_background')
 
         return None
     
     def _ask_human(self, question_text: str, field: Locator, is_required: bool = False):
         """
         Ask human to answer unknown question
-        Highlights field and waits for input
+        Highlights field and waits for EXPLICIT button click in browser
         """
         try:
-            # Highlight the field in browser
-            highlight_color = 'red' if is_required else 'orange'
-            field.evaluate(f"el => el.style.border = '4px solid {highlight_color}'")
-            field.evaluate("el => el.scrollIntoView({block: 'center'})")
+            # Highlight the field in browser and add interactive banner
+            highlight_color = 'rgba(255, 0, 0, 0.4)' if is_required else 'rgba(255, 165, 0, 0.4)'
+            field.evaluate(f"""(el, color) => {{ 
+                el.style.backgroundColor = color;
+                el.style.border = '4px solid #ff4500';
+                el.style.borderRadius = '8px';
+                el.scrollIntoView({{block: 'center', behavior: 'smooth'}});
+                
+                // Clear any existing banner
+                const existing = document.getElementById('bot-manual-banner');
+                if (existing) existing.remove();
+
+                // Reset flags
+                window.bot_confirm = false;
+                window.bot_skip = false;
+
+                // Create Modern Floating Banner
+                const banner = document.createElement('div');
+                banner.id = 'bot-manual-banner';
+                banner.style.cssText = 'position: fixed; top: 20px; left: 50%; transform: translateX(-50%); background: #1a1a1a; color: white; padding: 20px 30px; border-radius: 16px; z-index: 999999; box-shadow: 0 10px 40px rgba(0,0,0,0.5); font-family: -apple-system, system-ui, sans-serif; display: flex; align-items: center; gap: 20px; border: 1px solid #ff4500; min-width: 400px;';
+                
+                const text = document.createElement('div');
+                text.innerHTML = `<span style="color: #ff4500; font-weight: bold; display: block; margin-bottom: 4px;">🤔 QUESTION:</span> <span style="font-size: 16px;">{question_text}</span>`;
+                text.style.flex = '1';
+                
+                const btnContainer = document.createElement('div');
+                btnContainer.style.display = 'flex';
+                btnContainer.style.gap = '10px';
+
+                // Confirm Button
+                const confirmBtn = document.createElement('button');
+                confirmBtn.textContent = '✅ Confirm & Next';
+                confirmBtn.style.cssText = 'background: #ff4500; color: white; border: none; padding: 10px 20px; border-radius: 8px; cursor: pointer; font-weight: bold; transition: 0.2s;';
+                confirmBtn.onmouseenter = () => confirmBtn.style.transform = 'scale(1.05)';
+                confirmBtn.onmouseleave = () => confirmBtn.style.transform = 'scale(1)';
+                confirmBtn.onclick = () => {{ window.bot_confirm = true; banner.style.opacity = '0.5'; banner.innerText = '⌛ Processing...'; }};
+
+                // Skip Button
+                const skipBtn = document.createElement('button');
+                skipBtn.textContent = '⏭️ Skip';
+                skipBtn.style.cssText = 'background: #444; color: white; border: none; padding: 10px 15px; border-radius: 8px; cursor: pointer; font-size: 13px;';
+                skipBtn.onclick = () => {{ window.bot_skip = true; banner.remove(); }};
+
+                btnContainer.appendChild(skipBtn);
+                btnContainer.appendChild(confirmBtn);
+                banner.appendChild(text);
+                banner.appendChild(btnContainer);
+                document.body.appendChild(banner);
+            }}""", highlight_color)
             
-            # HYBRID AUTOMATION: 10s wait for input, then 4s post-detection review
-            logger.warning(f"🤔 UNKNOWN QUESTION: {question_text}", step="human_input")
-            print(f"\n🤔 Question: {question_text}")
-            print("⏳ Waiting for your input in the browser...")
+            logger.warning(f"🤔 WAITING FOR CONFIRMATION: {question_text}", step="human_input")
+            print(f"\n" + "="*50)
+            print(f"🤔 ACTION REQUIRED: {question_text}")
+            print(f"👉 Please answer and CLICK 'Confirm & Next' in the browser")
+            print("="*50 + "\n")
             
-            # Phase 1: Poll for any input (up to 10s wait for user to start)
-            detected = False
-            for _ in range(20):  # 10s total
+            # Indefinite wait loop (with safety timeout of 5 minutes)
+            start_time = time.time()
+            while (time.time() - start_time) < 300: # 5 minute limit
+                # Check for browser flags
+                is_confirmed = self.page.evaluate("() => window.bot_confirm")
+                is_skipped = self.page.evaluate("() => window.bot_skip")
+
+                if is_confirmed:
+                    # Final extract and save
+                    final_answer = self._extract_filled_value(field)
+                    if final_answer:
+                        self.learned_answers[question_text] = final_answer
+                        self._save_learned_answers()
+                        logger.info(f"✅ Learned answer: {final_answer}", step="human_input")
+                    
+                    self._cleanup_highlights(field)
+                    return final_answer
+                
+                if is_skipped:
+                    logger.info("Field skipped by user", step="human_input")
+                    self._cleanup_highlights(field)
+                    return None
+
                 time.sleep(0.5)
-                answer = self._extract_filled_value(field)
-                if answer:
-                    detected = True
-                    print(f"✅ Detected: '{answer}'. Keeping focus for 4 more seconds so you can finish/review...")
-                    break
             
-            if detected:
-                # Phase 2: The 4-second "Review" delay requested by user
-                time.sleep(4)
-                
-                # Re-extract the final value after review period
-                final_answer = self._extract_filled_value(field)
-                self.learned_answers[question_text] = final_answer
-                self._save_learned_answers()
-                logger.info(f"✅ Learned answer (post-review): {final_answer}", step="human_input")
-                
-                try:
-                    field.evaluate("el => el.style.border = ''")
-                except:
-                    pass
-                return final_answer
-            
-            # No input detected after 10s
-            try:
-                field.evaluate("el => el.style.border = ''")
-            except:
-                pass
-            logger.debug("No input detected, proceeding...", step="human_input")
+            # Timeout
+            logger.warning("Human input timed out (5 mins), skipping field", step="human_input")
+            self._cleanup_highlights(field)
             return None
                 
         except Exception as e:
             logger.error(f"Error in human input: {e}", step="human_input")
+            self._cleanup_highlights(field)
             return None
+
+    def _cleanup_highlights(self, field: Locator):
+        """Remove highlights and browser messages"""
+        try:
+            field.evaluate("""el => {
+                el.style.backgroundColor = '';
+                el.style.border = '';
+                el.style.borderRadius = '';
+                const msg = document.getElementById('bot-manual-banner');
+                if (msg) msg.remove();
+            }""")
+        except:
+            pass
     
     def _extract_filled_value(self, field: Locator) -> str:
         """Extract the value that was filled in the field"""
         try:
-            # Try input field
-            input_elem = field.locator("input[type='text'], input[type='email'], input[type='tel']").first
+            # 1. Try Text Input/Email/Tel
+            input_elem = field.locator("input[type='text'], input[type='email'], input[type='tel'], input[type='number']").first
             if input_elem.count() > 0:
-                return input_elem.input_value()
+                val = input_elem.input_value()
+                if val and val.strip(): return val.strip()
             
-            # Try textarea
+            # 2. Try Textarea
             textarea = field.locator("textarea").first
             if textarea.count() > 0:
-                return textarea.input_value()
+                val = textarea.input_value()
+                if val and val.strip(): return val.strip()
             
-            # Try select
+            # 3. Try Select Dropdown
             select = field.locator("select").first
             if select.count() > 0:
-                return select.input_value()
+                val = select.input_value()
+                if val and val.strip() and val != "Select an option": 
+                    # Try to get the text label instead of internal value
+                    try:
+                        return self.page.evaluate("el => el.options[el.selectedIndex].text", select.element_handle())
+                    except:
+                        return val
             
-            # Try radio (get checked)
-            radios = field.locator("input[type='radio']:checked").all()
-            if radios:
-                return radios[0].get_attribute("value")
+            # 4. Try Radio (get checked label)
+            checked_radio = field.locator("input[type='radio']:checked").first
+            if checked_radio.count() > 0:
+                # Try to find associated label text
+                radio_id = checked_radio.get_attribute("id")
+                if radio_id:
+                    label = self.page.locator(f"label[for='{radio_id}']").first
+                    if label.count() > 0:
+                        return label.inner_text().strip()
+                return "Yes" # Default fallback for checked radio
+            
+            # 5. Try Checkbox
+            checkbox = field.locator("input[type='checkbox']").first
+            if checkbox.count() > 0:
+                return "Checked" if checkbox.is_checked() else None
                 
         except:
             pass

@@ -1,6 +1,6 @@
 # Playwright locator strings
 # Optimized for Playwright's unified selector syntax
-
+#project-bot-easy-apply-python-playwright\bot\utils\selectors.py
 LOCATORS = {
     "next": {
         "primary": "button[aria-label='Continue to next step']",
@@ -79,7 +79,7 @@ LOCATORS = {
     
     "easy_apply_button": {
         "primary": "#jobs-apply-button-id",
-        "fallback": "button.jobs-apply-button, button[aria-label*='Easy Apply']"
+        "fallback": "button.jobs-apply-button, button[aria-label*='Easy Apply'], button[aria-label*='Continue applying']"
     }
 }
 

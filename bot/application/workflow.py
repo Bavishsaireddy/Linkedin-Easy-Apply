@@ -1,6 +1,7 @@
 import os
 import time
 import logging
+import re
 from playwright.sync_api import Page, TimeoutError as PlaywrightTimeoutError
 
 from bot.application.form_filler import FormFiller
@@ -215,8 +216,8 @@ class Workflow:
                 for button in buttons:
                     try:
                         text = button.text_content(timeout=2000)
-                        if text and "Easy Apply" in text:
-                            logger.debug(f"Found Easy Apply button: {text.strip()}", step="get_button")
+                        if text and ("Easy Apply" in text or "Continue" in text):
+                            logger.debug(f"Found Apply button: {text.strip()}", step="get_button")
                             return button
                     except:
                         continue
@@ -235,8 +236,8 @@ class Workflow:
                     for button in buttons:
                         try:
                             text = button.text_content(timeout=2000)
-                            if text and "Easy Apply" in text:
-                                logger.debug(f"Found Easy Apply button with fallback: {text.strip()}", step="get_button")
+                            if text and ("Easy Apply" in text or "Continue" in text):
+                                logger.debug(f"Found Apply button with fallback: {text.strip()}", step="get_button")
                                 return button
                         except:
                             continue
@@ -246,9 +247,9 @@ class Workflow:
             # Try text-based selector as last resort
             try:
                 logger.debug("Trying text-based selector", step="get_button")
-                button = self.page.get_by_role("button", name="Easy Apply").first
+                button = self.page.get_by_role("button", name=re.compile("Easy Apply|Continue", re.I)).first
                 if button.is_visible(timeout=2000):
-                    logger.debug("Found Easy Apply button with text selector", step="get_button")
+                    logger.debug("Found apply button with text selector", step="get_button")
                     return button
             except Exception as e:
                 logger.debug(f"Text-based selector didn't find button: {e}", step="get_button")
@@ -260,8 +261,8 @@ class Workflow:
                 for i, btn in enumerate(all_buttons[:30]):  # Check first 30 buttons
                     try:
                         text = btn.text_content(timeout=1000)
-                        if text and "Easy Apply" in text:
-                            logger.debug(f"Found button with Easy Apply text at index {i}: {text.strip()}", step="get_button")
+                        if text and ("Easy Apply" in text or "Continue" in text):
+                            logger.debug(f"Found button with text at index {i}: {text.strip()}", step="get_button")
                             # Get its attributes
                             btn_id = btn.get_attribute("id", timeout=1000)
                             btn_class = btn.get_attribute("class", timeout=1000)
