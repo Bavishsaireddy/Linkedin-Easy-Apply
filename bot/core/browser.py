@@ -3,6 +3,11 @@ import logging
 import platform
 import random
 from playwright.sync_api import sync_playwright, Browser as PlaywrightBrowser, BrowserContext, Page
+try:
+    import tkinter as tk
+    HAS_TKINTER = True
+except:
+    HAS_TKINTER = False
 
 log = logging.getLogger(__name__)
 
@@ -18,11 +23,31 @@ class Browser:
         self.use_persistent = profile_path and os.path.isdir(profile_path)
         self._setup_browser()
 
+    def _get_screen_resolution(self):
+        """Detect actual screen resolution to prevent off-screen issues"""
+        try:
+            if HAS_TKINTER:
+                root = tk.Tk()
+                root.withdraw()  # Hide the window
+                width = root.winfo_screenwidth()
+                height = root.winfo_screenheight()
+                root.destroy()
+                log.info(f"Detected screen resolution: {width}x{height}")
+                return {'width': width, 'height': height}
+        except Exception as e:
+            log.warning(f"Could not detect screen resolution: {e}")
+        
+        # Fallback to safe default
+        return {'width': 1366, 'height': 768}
+    
     def _setup_browser(self):
         """
         Initialize Playwright browser with stealth and anti-detection features
         """
         self.playwright = sync_playwright().start()
+        
+        # Get actual screen resolution
+        screen_res = self._get_screen_resolution()
         
         # Browser launch arguments for stealth
         launch_args = [
@@ -48,7 +73,7 @@ class Browser:
                     '--disable-infobars',
                     '--start-maximized',
                 ],
-                'viewport': {'width': 1920, 'height': 1080},
+                'viewport': screen_res,
                 'user_agent': self._get_random_user_agent(),
                 'locale': 'en-US',
                 'timezone_id': 'America/New_York',
@@ -90,7 +115,7 @@ class Browser:
             
             # Context options for anti-detection
             context_options = {
-                'viewport': {'width': 1920, 'height': 1080},
+                'viewport': screen_res,
                 'user_agent': self._get_random_user_agent(),
                 'locale': 'en-US',
                 'timezone_id': 'America/New_York',
