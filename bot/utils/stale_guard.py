@@ -14,13 +14,22 @@ def safe_action(action_func, locator_func, max_retries=3):
     while attempt <= max_retries:
         try:
             element = locator_func()
+            # Explicit visibility check before action
+            if hasattr(element, "wait_for"):
+                element.wait_for(state="visible", timeout=5000)
             return action_func(element)
         except PlaywrightTimeoutError:
-            logger.warning(f"Timeout encountered, retrying...", step="safe_action", event="timeout_retry", attempt=attempt)
-            time.sleep(1)
+            logger.warning(f"Timeout (attempt {attempt}/{max_retries}), retrying...", step="safe_action")
+            time.sleep(attempt * 1) # Exponential backoff
             attempt += 1
         except Exception as e:
-            # Let other exceptions propagate
+            # Handle potential stale element by waiting and retrying once
+            if "stale" in str(e).lower() or "detached" in str(e).lower() or "hidden" in str(e).lower():
+                logger.warning(f"DOM changed (attempt {attempt}), re-locating...", step="safe_action")
+                time.sleep(0.5)
+                attempt += 1
+                continue
+            logger.warning(f"Action failed: {e}", step="safe_action_error")
             raise e
             
     logger.error("Failed to complete action after retries", step="safe_action", event="action_abort")

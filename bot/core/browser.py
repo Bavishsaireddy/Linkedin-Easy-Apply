@@ -157,7 +157,7 @@ class Browser:
             );
         """)
         
-        log.info("Playwright browser initialized with stealth features")
+        log.info("Playwright browser initialized with advanced stealth features")
     
     def _add_stealth_scripts(self):
         """

@@ -7,6 +7,18 @@ phone_number: "your_phone_number"
 
 profile_path: './linkedin_profile'
 
+# Optional: Proxy configuration
+# Single proxy
+proxy:
+  server: 'http://proxy.example.com:8080'
+  username: 'your_user'
+  password: 'your_password'
+
+# OR Proxy pool (will rotate)
+# proxies:
+#   - server: 'http://p1.example.com:8080'
+#   - server: 'http://p2.example.com:8080'
+
 positions:
 - Software Engineer
 

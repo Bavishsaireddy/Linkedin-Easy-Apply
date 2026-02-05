@@ -50,3 +50,24 @@ candidates:
         max_session_age_days: 25
         backup_profile: false
         health_check: true
+
+# GLOBAL PROXY CONFIGURATION
+# This will be used by any candidate that doesn't define their own proxy pool
+proxy:
+  enabled: false
+  provider: "brightdata"
+  rotation:
+    strategy: "per_candidate" # options: per_session, per_candidate
+  health_check:
+    enabled: true
+    url: "https://lumtest.com/myip.json"
+    timeout: 10
+  pools:
+    - name: "brightdata_residential_us"
+      type: "residential"
+      host: "brd.superproxy.io"
+      port: 22225
+      username: "brd-customer-ID-zone-ZONE"
+      password: "PASSWORD"
+      country: "US"
+      enabled: true

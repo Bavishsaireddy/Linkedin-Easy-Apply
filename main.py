@@ -9,6 +9,7 @@ from bot.discovery.search import Search
 from bot.core.execution_guard import ExecutionGuard
 from bot.core.dry_run import DryRun
 from bot.core.metrics import Metrics
+from bot.core.proxy_manager import ProxyConfig, ProxyRotator, load_advanced_proxy_config
 import atexit
 from dotenv import load_dotenv
 import os
@@ -179,6 +180,21 @@ if __name__ == '__main__':
         cooldown = preferences.get('cooldown_seconds', 5)
         is_dry_run = preferences.get('dry_run', False)
         
+        # Proxy Setup (Advanced)
+        proxy_config = None
+        # First check candidate-specific proxy pool
+        if 'proxy' in selected_candidate:
+            rotator = ProxyRotator(selected_candidate['proxy'])
+            proxy_config = rotator.get_proxy(candidate_id=candidate_id)
+        
+        # If no candidate proxy, check global proxy pool (if defined at root of YAML)
+        if not proxy_config:
+            with open("config/candidates.yaml", 'r') as f:
+                root_data = yaml.safe_load(f)
+                proxy_rotator = load_advanced_proxy_config(root_data)
+                if proxy_rotator:
+                    proxy_config = proxy_rotator.get_proxy(candidate_id=candidate_id)
+        
         # Auto-assign profile path if empty (each candidate gets their own)
         profile_path = selected_candidate.get('profile_path', '')
         if not profile_path:
@@ -211,6 +227,10 @@ if __name__ == '__main__':
         is_dry_run = execution_config.get('dry_run', True)
         
         profile_path = parameters.get('profile_path', '')
+        
+        # Proxy Setup (Legacy)
+        proxy_rotator = load_advanced_proxy_config(parameters)
+        proxy_config = proxy_rotator.get_proxy() if proxy_rotator else None
 
     # Validate
     assert len(positions) > 0, "At least one position must be specified"
@@ -229,7 +249,11 @@ if __name__ == '__main__':
     atexit.register(metrics.print_summary)
 
     # Initialize Core Components
-    browser = Browser(profile_path=profile_path if profile_path else None)
+    browser = Browser(
+        profile_path=profile_path if profile_path else None,
+        proxy_config=proxy_config,
+        headless=False # Keep visible for now
+    )
     page = browser.get_page()
     
     # Login

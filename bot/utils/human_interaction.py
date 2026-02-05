@@ -127,8 +127,26 @@ class HumanInteraction:
             element.click()
             
         except Exception as e:
+            # Handle potential stale element by waiting and retrying once
+            if "stale" in str(e).lower() or "detached" in str(e).lower():
+                logger.warning("Detected detached element, retrying locator...", step="human_click")
+                time.sleep(1)
+                element.click()
+                return
+
             logger.warning(f"Click failed: {e}", step="click_error")
             raise
+
+    def move_mouse_randomly(self):
+        """Perform a natural micro-movement elsewhere to mimic real users"""
+        try:
+            viewport = self.page.viewport_size
+            if viewport:
+                x = random.randint(0, viewport['width'])
+                y = random.randint(0, viewport['height'])
+                self.page.mouse.move(x, y, steps=random.randint(5, 15))
+        except:
+            pass
 
     def type_text(self, locator, text):
         """

@@ -1,186 +1,135 @@
 """
-Proxy rotation and management for distributed requests
+Advanced Proxy management with rotation, health checks, and provider support
 """
 import random
 import logging
-from typing import List, Optional, Dict
-from dataclasses import dataclass
+import time
+import requests
+from typing import List, Optional, Dict, Any
+from dataclasses import dataclass, field
 
 log = logging.getLogger(__name__)
 
-
 @dataclass
 class ProxyConfig:
-    """Configuration for a single proxy"""
+    """Configuration for a single proxy element from a pool"""
     name: str
-    server: str  # Format: http://host:port or socks5://host:port
+    server: str  # Format: host:port
     username: Optional[str] = None
     password: Optional[str] = None
+    type: str = "residential"
+    country: str = "US"
+    enabled: bool = True
     
-    def get_chrome_proxy_string(self):
-        """Get proxy string in Chrome format"""
+    @property
+    def playwright_server(self):
+        """Format server for Playwright (ensuring http prefix)"""
+        if not self.server.startswith(('http://', 'https://', 'socks5://')):
+            return f"http://{self.server}"
         return self.server
-    
+
     def to_playwright_dict(self):
-        """Convert to Playwright proxy configuration"""
-        config = {'server': self.server}
+        """Convert to Playwright proxy configuration format"""
+        config = {'server': self.playwright_server}
         if self.username and self.password:
             config['username'] = self.username
             config['password'] = self.password
         return config
 
+    def check_health(self, test_url: str = "https://lumtest.com/myip.json", timeout: int = 10) -> bool:
+        """Verify proxy is working and returns an IP"""
+        proxies = {
+            "http": f"http://{self.username}:{self.password}@{self.server}" if self.username else f"http://{self.server}",
+            "https": f"http://{self.username}:{self.password}@{self.server}" if self.username else f"http://{self.server}"
+        }
+        try:
+            response = requests.get(test_url, proxies=proxies, timeout=timeout)
+            if response.status_code == 200:
+                log.info(f"✅ Proxy {self.name} is healthy. IP Info: {response.text.strip()[:50]}...")
+                return True
+            return False
+        except Exception as e:
+            log.warning(f"❌ Proxy {self.name} health check failed: {e}")
+            return False
 
 class ProxyRotator:
     """
-    Manages a pool of proxies and rotates between them
+    Manages pools and executes rotation strategies
     """
-    
-    def __init__(self, proxies: List[ProxyConfig] = None, strategy='round_robin'):
-        """
-        Initialize proxy rotator
+    def __init__(self, config_dict: Dict[str, Any]):
+        self.config = config_dict
+        self.enabled = config_dict.get('enabled', False)
+        self.strategy = config_dict.get('rotation', {}).get('strategy', 'per_session')
+        self.pool: List[ProxyConfig] = []
+        self._load_pools()
         
-        Args:
-            proxies: List of ProxyConfig objects
-            strategy: Rotation strategy ('round_robin', 'random', 'weighted')
-        """
-        self.proxies = proxies or []
-        self.strategy = strategy
         self.current_index = 0
-        self.usage_count = {proxy.name: 0 for proxy in self.proxies}
-        self.failure_count = {proxy.name: 0 for proxy in self.proxies}
+        self.failure_counts = {}
         
-        if self.proxies:
-            log.info(f"Initialized ProxyRotator with {len(self.proxies)} proxies, strategy: {strategy}")
-        else:
-            log.warning("ProxyRotator initialized with no proxies")
-    
-    def add_proxy(self, proxy: ProxyConfig):
-        """Add a proxy to the pool"""
-        self.proxies.append(proxy)
-        self.usage_count[proxy.name] = 0
-        self.failure_count[proxy.name] = 0
-        log.info(f"Added proxy: {proxy.name}")
-    
-    def remove_proxy(self, proxy_name: str):
-        """Remove a proxy from the pool"""
-        self.proxies = [p for p in self.proxies if p.name != proxy_name]
-        self.usage_count.pop(proxy_name, None)
-        self.failure_count.pop(proxy_name, None)
-        log.info(f"Removed proxy: {proxy_name}")
-    
-    def get_next_proxy(self) -> Optional[ProxyConfig]:
-        """
-        Get the next proxy based on rotation strategy
-        
-        Returns:
-            ProxyConfig or None if no proxies available
-        """
-        if not self.proxies:
-            log.warning("No proxies available")
+    def _load_pools(self):
+        """Convert pool definitions into ProxyConfig objects"""
+        pools_data = self.config.get('pools', [])
+        for p in pools_data:
+            if not p.get('enabled', True):
+                continue
+                
+            # Construct server string
+            host = p.get('host')
+            port = p.get('port')
+            if not host or not port: continue
+            
+            # Resolve credentials (supporting env var placeholders or direct values)
+            username = p.get('username', '')
+            password = p.get('password', '')
+            
+            # Basic placeholder resolution (real env vars should be handled in loader)
+            import os
+            if "{your_password}" in password or not password:
+                # Check for provider specific env vars
+                env_key = f"PROXY_{self.config.get('provider', 'custom').upper()}_PASSWORD"
+                password = os.getenv(env_key, password)
+
+            self.pool.append(ProxyConfig(
+                name=p.get('name', 'pool_proxy'),
+                server=f"{host}:{port}",
+                username=username,
+                password=password,
+                type=p.get('type', 'residential'),
+                country=p.get('country', 'US')
+            ))
+
+    def get_proxy(self, candidate_id: Optional[str] = None) -> Optional[ProxyConfig]:
+        """Get proxy based on strategy"""
+        if not self.enabled or not self.pool:
             return None
+
+        # Strategy: per_candidate
+        if self.strategy == 'per_candidate' and candidate_id:
+            # Use deterministic selection based on ID hash
+            idx = sum(ord(c) for c in candidate_id) % len(self.pool)
+            proxy = self.pool[idx]
         
-        if self.strategy == 'round_robin':
-            proxy = self._round_robin()
-        elif self.strategy == 'random':
-            proxy = self._random()
-        elif self.strategy == 'weighted':
-            proxy = self._weighted()
+        # Strategy: random or round_robin (shuffled)
         else:
-            log.warning(f"Unknown strategy: {self.strategy}, using round_robin")
-            proxy = self._round_robin()
-        
-        if proxy:
-            self.usage_count[proxy.name] += 1
-            log.debug(f"Selected proxy: {proxy.name} (used {self.usage_count[proxy.name]} times)")
+            proxy = random.choice(self.pool)
+
+        # Health Check
+        health_cfg = self.config.get('health_check', {})
+        if health_cfg.get('enabled', True):
+            if not proxy.check_health(
+                test_url=health_cfg.get('url', "https://lumtest.com/myip.json"),
+                timeout=health_cfg.get('timeout', 10)
+            ):
+                # Retry once with another proxy if this one is dead
+                log.warning("Selected proxy failed health check, trying one fallback...")
+                proxy = random.choice([p for p in self.pool if p != proxy])
+                if not proxy.check_health(): return None
         
         return proxy
-    
-    def _round_robin(self) -> ProxyConfig:
-        """Round-robin selection"""
-        proxy = self.proxies[self.current_index]
-        self.current_index = (self.current_index + 1) % len(self.proxies)
-        return proxy
-    
-    def _random(self) -> ProxyConfig:
-        """Random selection"""
-        return random.choice(self.proxies)
-    
-    def _weighted(self) -> ProxyConfig:
-        """
-        Weighted selection - prefer proxies with fewer failures
-        """
-        if not self.proxies:
-            return None
-        
-        # Calculate weights (inverse of failure count)
-        weights = []
-        for proxy in self.proxies:
-            failures = self.failure_count.get(proxy.name, 0)
-            # Weight is inversely proportional to failures
-            weight = 1.0 / (failures + 1)
-            weights.append(weight)
-        
-        # Weighted random choice
-        return random.choices(self.proxies, weights=weights, k=1)[0]
-    
-    def report_failure(self, proxy_name: str):
-        """Report a proxy failure"""
-        if proxy_name in self.failure_count:
-            self.failure_count[proxy_name] += 1
-            log.warning(f"Proxy failure reported: {proxy_name} (total failures: {self.failure_count[proxy_name]})")
-    
-    def report_success(self, proxy_name: str):
-        """Report a proxy success (optional, for future enhancements)"""
-        log.debug(f"Proxy success: {proxy_name}")
-    
-    def get_stats(self) -> Dict:
-        """Get proxy usage statistics"""
-        return {
-            'total_proxies': len(self.proxies),
-            'usage_count': dict(self.usage_count),
-            'failure_count': dict(self.failure_count),
-            'strategy': self.strategy
-        }
-    
-    def print_stats(self):
-        """Print proxy statistics"""
-        log.info("=" * 60)
-        log.info("PROXY STATISTICS")
-        log.info("=" * 60)
-        log.info(f"Total Proxies: {len(self.proxies)}")
-        log.info(f"Strategy: {self.strategy}")
-        log.info("-" * 60)
-        
-        for proxy in self.proxies:
-            usage = self.usage_count.get(proxy.name, 0)
-            failures = self.failure_count.get(proxy.name, 0)
-            success_rate = ((usage - failures) / usage * 100) if usage > 0 else 0
-            log.info(f"  {proxy.name:20s} | Used: {usage:3d} | Failed: {failures:3d} | Success: {success_rate:5.1f}%")
-        
-        log.info("=" * 60)
 
-
-def load_proxies_from_config(config: Dict) -> List[ProxyConfig]:
-    """
-    Load proxies from configuration dictionary
-    
-    Args:
-        config: Configuration dict with 'proxies' key
-        
-    Returns:
-        List of ProxyConfig objects
-    """
-    proxies = []
-    proxy_list = config.get('proxies', [])
-    
-    for proxy_data in proxy_list:
-        proxy = ProxyConfig(
-            name=proxy_data.get('name', f'proxy_{len(proxies)}'),
-            server=proxy_data['server'],
-            username=proxy_data.get('username'),
-            password=proxy_data.get('password')
-        )
-        proxies.append(proxy)
-        log.info(f"Loaded proxy: {proxy.name} -> {proxy.server}")
-    
-    return proxies
+def load_advanced_proxy_config(yaml_data: Dict) -> Optional[ProxyRotator]:
+    """Helper to initialize ProxyRotator from YAML data"""
+    proxy_section = yaml_data.get('proxy')
+    if not proxy_section or not proxy_section.get('enabled', False):
+        return None
+    return ProxyRotator(proxy_section)
