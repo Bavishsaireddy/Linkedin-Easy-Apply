@@ -172,6 +172,120 @@ class Workflow:
         except Exception as e:
             logger.debug(f"Modal cleanup attempt failed (might not be open): {e}", step="cleanup")
 
+    def wait_for_submit_confirmation(self, jobID):
+        try:
+            logger.info("⏸️ Application paused for manual review before submission.", job_id=jobID, step="confirmation")
+            
+            # Inject the modal via evaluate
+            self.page.evaluate("""() => {
+                // Clear any existing overlay
+                const existing = document.getElementById('bot-submission-overlay');
+                if (existing) existing.remove();
+
+                const overlay = document.createElement('div');
+                overlay.id = 'bot-submission-overlay';
+                // Use pointer-events: none so user can click/scroll the page behind it
+                overlay.style.cssText = 'position: fixed; top: 0; left: 0; width: 100%; height: 100%; z-index: 9999999; pointer-events: none; display: flex; align-items: flex-start; justify-content: flex-end; padding: 30px; transition: opacity 0.3s ease;';
+                
+                const modal = document.createElement('div');
+                // Re-enable pointer events for the modal itself
+                modal.style.cssText = 'background: #121212; color: white; padding: 24px; border-radius: 24px; width: 380px; box-shadow: 0 20px 50px rgba(0,0,0,0.6); font-family: "Outfit", "Inter", -apple-system, system-ui, sans-serif; border: 1px solid #333; text-align: left; transform: translateY(-20px); opacity: 0; transition: all 0.4s cubic-bezier(0.175, 0.885, 0.32, 1.1); pointer-events: auto;';
+                
+                const header = document.createElement('div');
+                header.style.cssText = 'display: flex; align-items: center; gap: 12px; margin-bottom: 16px;';
+                
+                const icon = document.createElement('div');
+                icon.innerHTML = '🚀';
+                icon.style.cssText = 'font-size: 28px;';
+                
+                const title = document.createElement('h2');
+                title.innerText = 'Review & Submit';
+                title.style.cssText = 'font-size: 20px; margin: 0; font-weight: 800; background: linear-gradient(135deg, #ff4500, #ff8c00); -webkit-background-clip: text; -webkit-text-fill-color: transparent;';
+                
+                header.appendChild(icon);
+                header.appendChild(title);
+                
+                const desc = document.createElement('p');
+                desc.innerText = 'The bot has finished filling the form. Please review the application on the left and then decide:';
+                desc.style.cssText = 'font-size: 14px; margin-bottom: 20px; color: #bbb; line-height: 1.5;';
+                
+                const btnContainer = document.createElement('div');
+                btnContainer.style.cssText = 'display: flex; gap: 12px;';
+                
+                const proceedBtn = document.createElement('button');
+                proceedBtn.innerText = 'Submit Now';
+                proceedBtn.style.cssText = 'background: #ff4500; color: white; border: none; padding: 12px 20px; border-radius: 12px; cursor: pointer; font-weight: 700; font-size: 14px; flex: 1.5; transition: all 0.2s;';
+                proceedBtn.onmouseenter = () => proceedBtn.style.background = '#ff571a';
+                proceedBtn.onmouseleave = () => proceedBtn.style.background = '#ff4500';
+                
+                const skipBtn = document.createElement('button');
+                skipBtn.innerText = 'Skip Job';
+                skipBtn.style.cssText = 'background: #2a2a2a; color: #ddd; border: 1px solid #444; padding: 12px 20px; border-radius: 12px; cursor: pointer; font-weight: 600; font-size: 14px; flex: 1; transition: all 0.2s;';
+                skipBtn.onmouseenter = () => skipBtn.style.background = '#333';
+                skipBtn.onmouseleave = () => skipBtn.style.background = '#2a2a2a';
+                
+                proceedBtn.onclick = () => { 
+                    window.bot_submit_action = 'proceed'; 
+                    modal.style.transform = 'translateY(-20px)';
+                    modal.style.opacity = '0';
+                    setTimeout(() => overlay.remove(), 400);
+                };
+                
+                skipBtn.onclick = () => { 
+                    window.bot_submit_action = 'skip'; 
+                    modal.style.transform = 'translateY(-20px)';
+                    modal.style.opacity = '0';
+                    setTimeout(() => overlay.remove(), 400);
+                };
+                
+                btnContainer.appendChild(skipBtn);
+                btnContainer.appendChild(proceedBtn);
+                modal.appendChild(header);
+                modal.appendChild(desc);
+                modal.appendChild(btnContainer);
+                overlay.appendChild(modal);
+                document.body.appendChild(overlay);
+                
+                // Trigger animation
+                setTimeout(() => {
+                    modal.style.transform = 'translateY(0)';
+                    modal.style.opacity = '1';
+                }, 50);
+                
+                window.bot_submit_action = null;
+            }""")
+            
+            # Wait for user action
+            start_time = time.time()
+            max_wait = 1800  # 30 minutes
+            
+            while (time.time() - start_time) < max_wait:
+                try:
+                    action = self.page.evaluate("() => window.bot_submit_action")
+                    if action == 'proceed':
+                        logger.info("✅ User confirmed submission. Proceeding...", job_id=jobID, step="confirmation")
+                        return True
+                    elif action == 'skip':
+                        logger.info("⏭️ User skipped submission.", job_id=jobID, step="confirmation")
+                        return False
+                except Exception as e:
+                    # If browser is closed, stop waiting
+                    if "closed" in str(e).lower() or "target" in str(e).lower():
+                        logger.warning("Browser closed during confirmation wait.", job_id=jobID, step="confirmation")
+                        return False
+                    raise e
+                    
+                time.sleep(1)
+            
+            # Timeout
+            logger.warning("⏰ Submission confirmation timed out after 30 mins.", job_id=jobID, step="confirmation")
+            self.page.evaluate("() => { const o = document.getElementById('bot-submission-overlay'); if(o) o.remove(); }")
+            return False
+            
+        except Exception as e:
+            logger.error(f"Error in submission confirmation: {e}", step="confirmation")
+            return True # Fallback to proceed if error occurs in UI injection
+
     @retry(max_attempts=3, delay=1)
     def get_job_page(self, jobID):
         """
@@ -368,6 +482,12 @@ class Workflow:
                             logger.info("Fake success for dry run", job_id=jobID, step="submit", event="dry_run_success")
                             break
                         
+                        # NEW: Wait for user confirmation before final click
+                        if not self.wait_for_submit_confirmation(jobID):
+                            logger.warning("Submission cancelled by user", job_id=jobID, step="submit")
+                            submitted = False
+                            break # Skip this job
+                            
                         # Click submit
                         element.click()
                         logger.info("Clicked Submit button", job_id=jobID, step="submit")
