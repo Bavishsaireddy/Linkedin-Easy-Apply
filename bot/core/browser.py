@@ -49,30 +49,24 @@ class Browser:
         # Get actual screen resolution
         screen_res = self._get_screen_resolution()
         
-        # Browser launch arguments for stealth
+        # Browser launch arguments for stealth - reduced set to avoid crashes
         launch_args = [
             '--disable-blink-features=AutomationControlled',
-            '--disable-dev-shm-usage',
-            '--no-sandbox',
-            '--disable-setuid-sandbox',
-            '--disable-web-security',
-            '--disable-features=IsolateOrigins,site-per-process',
-            '--disable-site-isolation-trials',
+            '--exclude-switches=enable-automation',
+            '--disable-infobars',
+            '--start-maximized',
+            '--no-sandbox',  # Keep this for compatibility
+            '--disable-dev-shm-usage',  # Keep this to avoid shared memory issues
         ]
         
         # If using persistent context (recommended for LinkedIn)
         if self.use_persistent:
             log.info(f"Using persistent context: {self.profile_path}")
             
-            # Build context options with maximum stealth
+            # Build context options with balanced stealth (avoid flag conflicts)
             context_options = {
                 'headless': self.headless,
-                'args': launch_args + [
-                    '--disable-blink-features=AutomationControlled',
-                    '--exclude-switches=enable-automation',
-                    '--disable-infobars',
-                    '--start-maximized',
-                ],
+                'args': launch_args,
                 'viewport': screen_res,
                 'user_agent': self._get_random_user_agent(),
                 'locale': 'en-US',
@@ -82,6 +76,7 @@ class Browser:
                 'device_scale_factor': 1,
                 'has_touch': False,
                 'is_mobile': False,
+                'ignore_default_args': ['--enable-automation', '--enable-blink-features=AutomationControlled'],
             }
             
             # Add proxy if configured
@@ -91,10 +86,24 @@ class Browser:
                 log.info(f"Using proxy: {self.proxy_config.name}")
             
             # Launch persistent context (this is the key for avoiding detection!)
-            self.context = self.playwright.chromium.launch_persistent_context(
-                self.profile_path,
-                **context_options
-            )
+            try:
+                self.context = self.playwright.chromium.launch_persistent_context(
+                    self.profile_path,
+                    **context_options
+                )
+            except Exception as e:
+                log.error(f"Failed to launch with persistent context: {e}")
+                log.info("Attempting to launch with minimal flags...")
+                # Fallback to minimal configuration
+                minimal_options = {
+                    'headless': self.headless,
+                    'args': ['--no-sandbox', '--disable-dev-shm-usage'],
+                    'viewport': screen_res,
+                }
+                self.context = self.playwright.chromium.launch_persistent_context(
+                    self.profile_path,
+                    **minimal_options
+                )
             
             # Get or create page
             self.page = self.context.pages[0] if self.context.pages else self.context.new_page()

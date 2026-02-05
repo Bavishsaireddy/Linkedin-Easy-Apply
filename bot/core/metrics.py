@@ -40,7 +40,7 @@ class Metrics:
 
         # Try to show Global Summary from DuckDB
         try:
-            con = duckdb.connect(self.db_path)
+            con = duckdb.connect(self.db_path, read_only=True)
             total = con.execute("SELECT count(*) FROM applications WHERE result = true").fetchone()[0]
             con.close()
             logger.info(f"📊 LIFETIME SUCCESSES (DuckDB): {total}", step="metrics")
