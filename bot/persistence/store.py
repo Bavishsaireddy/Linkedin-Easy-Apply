@@ -26,16 +26,52 @@ class Store:
         """Initialize database schema (if not exists)"""
         con = self._get_connection()
         try:
+            # Main applications table with comprehensive tracking
             con.execute("""
                 CREATE TABLE IF NOT EXISTS applications (
-                    timestamp TIMESTAMP,
-                    job_id VARCHAR,
-                    job VARCHAR,
+                    -- Core identification
+                    job_id VARCHAR PRIMARY KEY,
+                    job_title VARCHAR,
                     company VARCHAR,
-                    attempted BOOLEAN,
-                    result BOOLEAN,
+                    location VARCHAR,
+                    work_type VARCHAR,  -- Remote, Hybrid, On-site
+                    
+                    -- Timestamps
+                    started_at TIMESTAMP,
+                    user_confirmed_at TIMESTAMP,  -- When user clicked "Submit Now"
+                    submitted_at TIMESTAMP,        -- When LinkedIn confirmed submission
+                    
+                    -- Status tracking
+                    status VARCHAR,  -- 'user_confirmed', 'submitted', 'failed', 'skipped', 'error'
+                    attempted BOOLEAN DEFAULT FALSE,
+                    success BOOLEAN DEFAULT FALSE,
+                    
+                    -- User interaction
+                    user_submitted BOOLEAN DEFAULT FALSE,  -- Did user click "Submit Now"?
+                    user_skipped BOOLEAN DEFAULT FALSE,     -- Did user click "Skip Job"?
+                    
+                    -- Form details
+                    form_pages INTEGER DEFAULT 0,
+                    fields_filled INTEGER DEFAULT 0,
+                    errors_encountered INTEGER DEFAULT 0,
+                    error_message VARCHAR,
+                    
+                    -- Timing
+                    duration_seconds REAL,  -- Total time from start to submission
+                    
+                    -- Context
                     candidate_id VARCHAR DEFAULT 'default',
-                    proxy_used VARCHAR DEFAULT NULL
+                    proxy_used VARCHAR DEFAULT NULL,
+                    run_id VARCHAR,
+                    
+                    -- Metadata
+                    job_url VARCHAR,
+                    salary_range VARCHAR,
+                    seniority_level VARCHAR,
+                    employment_type VARCHAR,  -- Full-time, Part-time, Contract
+                    
+                    -- Extras
+                    notes VARCHAR
                 )
             """)
             
@@ -44,7 +80,12 @@ class Store:
                     candidate_id VARCHAR PRIMARY KEY,
                     name VARCHAR,
                     email VARCHAR,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    phone VARCHAR,
+                    linkedin_profile VARCHAR,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    total_applications INTEGER DEFAULT 0,
+                    total_user_confirmations INTEGER DEFAULT 0,
+                    total_successful_submissions INTEGER DEFAULT 0
                 )
             """)
             
@@ -54,19 +95,49 @@ class Store:
                     candidate_id VARCHAR,
                     started_at TIMESTAMP,
                     completed_at TIMESTAMP,
-                    applications_submitted INTEGER DEFAULT 0,
+                    
+                    -- Detailed metrics
+                    jobs_viewed INTEGER DEFAULT 0,
+                    applications_attempted INTEGER DEFAULT 0,
+                    user_confirmations INTEGER DEFAULT 0,  -- Count of "Submit Now" clicks
+                    applications_submitted INTEGER DEFAULT 0,  -- Actual LinkedIn submissions
                     applications_failed INTEGER DEFAULT 0,
+                    applications_skipped INTEGER DEFAULT 0,
+                    
+                    -- Context
                     proxy_used VARCHAR,
-                    system_id VARCHAR DEFAULT 'local'
+                    system_id VARCHAR DEFAULT 'local',
+                    
+                    -- Session info
+                    search_keywords VARCHAR,
+                    location_filter VARCHAR,
+                    notes VARCHAR
                 )
             """)
             
             con.execute("""
                 CREATE TABLE IF NOT EXISTS qa (
                     question VARCHAR UNIQUE,
-                    answer VARCHAR
+                    answer VARCHAR,
+                    candidate_id VARCHAR DEFAULT 'default',
+                    times_used INTEGER DEFAULT 0,
+                    last_used_at TIMESTAMP,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
             """)
+            
+            # Create submission events table for granular tracking
+            con.execute("""
+                CREATE TABLE IF NOT EXISTS submission_events (
+                    event_id INTEGER PRIMARY KEY,
+                    job_id VARCHAR,
+                    event_type VARCHAR,  -- 'user_confirmed', 'submit_clicked', 'success', 'error'
+                    event_timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    details VARCHAR,
+                    candidate_id VARCHAR DEFAULT 'default'
+                )
+            """)
+            
         finally:
             con.close()
 
@@ -133,7 +204,132 @@ class Store:
         finally:
             con.close()
 
-    def write_to_file(self, button, jobID, browserTitle, result, candidate_id='default', proxy_used=None) -> None:
+    
+    def start_application(self, job_id, job_title, company, candidate_id='default', job_url=None, location=None):
+        """Record when an application starts"""
+        con = self._get_connection()
+        try:
+            timestamp = datetime.now()
+            # Use INSERT OR REPLACE to handle retries/re-attempts
+            con.execute("""
+                INSERT OR REPLACE INTO applications 
+                (job_id, job_title, company, location, started_at, status, attempted, candidate_id, job_url)
+                VALUES (?, ?, ?, ?, ?, 'started', TRUE, ?, ?)
+            """, [job_id, job_title, company, location, timestamp, candidate_id, job_url])
+            
+            # Log event
+            self.log_submission_event(job_id, 'application_started', f'Started application for {job_title} at {company}', candidate_id)
+            
+        except Exception as e:
+            log.error(f"Failed to record application start: {e}")
+        finally:
+            con.close()
+    
+    def record_user_confirmation(self, job_id, candidate_id='default'):
+        """Record when user clicks 'Submit Now' button"""
+        con = self._get_connection()
+        try:
+            timestamp = datetime.now()
+            con.execute("""
+                UPDATE applications 
+                SET user_confirmed_at = ?,
+                    user_submitted = TRUE,
+                    status = 'user_confirmed'
+                WHERE job_id = ?
+            """, [timestamp, job_id])
+            
+            # Log event
+            self.log_submission_event(job_id, 'user_confirmed', 'User clicked Submit Now button', candidate_id)
+            log.info(f"📊 Recorded user confirmation for job {job_id}")
+            
+        except Exception as e:
+            log.error(f"Failed to record user confirmation: {e}")
+        finally:
+            con.close()
+    
+    def record_user_skip(self, job_id, candidate_id='default'):
+        """Record when user clicks 'Skip Job' button"""
+        con = self._get_connection()
+        try:
+            timestamp = datetime.now()
+            con.execute("""
+                UPDATE applications 
+                SET user_skipped = TRUE,
+                    status = 'skipped'
+                WHERE job_id = ?
+            """, [timestamp, job_id])
+            
+            # Log event
+            self.log_submission_event(job_id, 'user_skipped', 'User clicked Skip Job button', candidate_id)
+            log.info(f"📊 Recorded user skip for job {job_id}")
+            
+        except Exception as e:
+            log.error(f"Failed to record user skip: {e}")
+        finally:
+            con.close()
+    
+    def record_submission_success(self, job_id, candidate_id='default', duration_seconds=None, form_pages=0, fields_filled=0):
+        """Record successful LinkedIn submission"""
+        con = self._get_connection()
+        try:
+            timestamp = datetime.now()
+            con.execute("""
+                UPDATE applications 
+                SET submitted_at = ?,
+                    success = TRUE,
+                    status = 'submitted',
+                    duration_seconds = ?,
+                    form_pages = ?,
+                    fields_filled = ?
+                WHERE job_id = ?
+            """, [timestamp, duration_seconds, form_pages, fields_filled, job_id])
+            
+            # Log event
+            self.log_submission_event(job_id, 'submission_success', f'Application successfully submitted (duration: {duration_seconds}s)', candidate_id)
+            log.info(f"✅ Recorded successful submission for job {job_id}")
+            
+        except Exception as e:
+            log.error(f"Failed to record submission success: {e}")
+        finally:
+            con.close()
+    
+    def record_submission_failure(self, job_id, error_message, candidate_id='default', errors_encountered=0):
+        """Record failed submission attempt"""
+        con = self._get_connection()
+        try:
+            con.execute("""
+                UPDATE applications 
+                SET success = FALSE,
+                    status = 'failed',
+                    error_message = ?,
+                    errors_encountered = ?
+                WHERE job_id = ?
+            """, [error_message, errors_encountered, job_id])
+            
+            # Log event
+            self.log_submission_event(job_id, 'submission_failed', f'Error: {error_message}', candidate_id)
+            log.info(f"❌ Recorded submission failure for job {job_id}")
+            
+        except Exception as e:
+            log.error(f"Failed to record submission failure: {e}")
+        finally:
+            con.close()
+    
+    def log_submission_event(self, job_id, event_type, details, candidate_id='default'):
+        """Log granular submission events for debugging and analytics"""
+        con = self._get_connection()
+        try:
+            con.execute("""
+                INSERT INTO submission_events (job_id, event_type, details, candidate_id)
+                VALUES (?, ?, ?, ?)
+            """, [job_id, event_type, details, candidate_id])
+        except Exception as e:
+            log.error(f"Failed to log submission event: {e}")
+        finally:
+            con.close()
+    
+    def write_to_file(self, button, jobID, browserTitle, result, candidate_id='default', proxy_used=None):
+        """Legacy method for backward compatibility - maps to new schema"""
         def re_extract(text, pattern):
             target = re.search(pattern, text)
             if target:
@@ -141,19 +337,39 @@ class Store:
             return target
             
         timestamp = datetime.now()
-        attempted = True if button else False # Logic copied from old code: False if button==False else True
+        attempted = True if button else False
         
         job = re_extract(browserTitle.split(' | ')[0], r"\(?\d?\)?\s?(\w.*)")
         company = re_extract(browserTitle.split(' | ')[1], r"(\w.*)")
         
+        # Use new schema structure
         con = self._get_connection()
         try:
-            con.execute("INSERT INTO applications VALUES (?, ?, ?, ?, ?, ?, ?, ?)", 
-                             [timestamp, jobID, job, company, attempted, result, candidate_id, proxy_used])
+            # Check if application already exists
+            existing = con.execute("SELECT job_id FROM applications WHERE job_id = ?", [jobID]).fetchone()
+            
+            if existing:
+                # Update existing record
+                con.execute("""
+                    UPDATE applications 
+                    SET success = ?,
+                        status = ?,
+                        proxy_used = ?
+                    WHERE job_id = ?
+                """, [result, 'submitted' if result else 'failed', proxy_used, jobID])
+            else:
+                # Insert new record (legacy path)
+                con.execute("""
+                    INSERT INTO applications 
+                    (job_id, job_title, company, started_at, attempted, success, status, candidate_id, proxy_used)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """, [jobID, job, company, timestamp, attempted, result, 'submitted' if result else 'failed', candidate_id, proxy_used])
+                
         except Exception as e:
             log.error(f"Failed to write application to DB: {e}")
         finally:
             con.close()
+
 
     def save_answer(self, question, answer):
         con = self._get_connection()

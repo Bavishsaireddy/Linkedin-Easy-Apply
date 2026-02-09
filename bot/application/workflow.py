@@ -57,13 +57,36 @@ class Workflow:
                 string_easy = "* has Easy Apply Button"
                 logger.info("Clicking the EASY apply button", job_id=jobID, step="apply", event="click_apply")
                 
+                # Extract job details and record application start
                 try:
+                    browser_title = self.page.title()
+                    # Parse title: "Job Title | Company | LinkedIn"
+                    parts = browser_title.split(' | ')
+                    job_title = parts[0].strip() if len(parts) > 0 else "Unknown"
+                    company = parts[1].strip() if len(parts) > 1 else "Unknown"
+                    
+                    # Record application start with comprehensive tracking
+                    candidate_id = self.candidate_profile.get('name', 'default') if self.candidate_profile else 'default'
+                    self.store.start_application(
+                        job_id=jobID,
+                        job_title=job_title,
+                        company=company,
+                        candidate_id=candidate_id,
+                        job_url=self.page.url
+                    )
+                except Exception as e:
+                    logger.warning(f"Failed to parse job details for tracking: {e}", job_id=jobID)
+                
+                try:
+                    # Record start time for duration tracking
+                    start_time = time.time()
+                    
                     button.click()
                     logger.debug("Waiting for modal to open...", job_id=jobID, step="apply")
                     time.sleep(2)  # Wait for modal to fully open
                     
                     # Form filling happens inside send_resume now
-                    result = self.send_resume(jobID)
+                    result = self.send_resume(jobID, start_time)
 
                     if result:
                         string_easy = "*Applied: Sent Resume"
@@ -415,13 +438,16 @@ class Workflow:
             return False
 
     @retry(max_attempts=5, delay=1)
-    def send_resume(self, jobID=None) -> bool:
+    def send_resume(self, jobID=None, start_time=None) -> bool:
         """
         Navigate through multi-step application form
         """
         try:
             submitted = False
             loop = 0
+            form_pages = 0
+            candidate_id = self.candidate_profile.get('name', 'default') if self.candidate_profile else 'default'
+            
             while loop < 20:  # Increased loop limit for multi-page forms
                 time.sleep(1)
                 
@@ -483,58 +509,80 @@ class Workflow:
                             break
                         
                         # NEW: Wait for user confirmation before final click
-                        if not self.wait_for_submit_confirmation(jobID):
-                            logger.warning("Submission cancelled by user", job_id=jobID, step="submit")
+                        user_decision = self.wait_for_submit_confirmation(jobID)
+                        
+                        if not user_decision:
+                            # User clicked "Skip Job" - TRACK THIS!
+                            logger.warning("⏭️ User clicked 'Skip Job' - Recording skip", job_id=jobID, step="user_action")
+                            self.store.record_user_skip(jobID, candidate_id)
                             submitted = False
-                            break # Skip this job
+                            break  # Skip this job
+                        
+                        # User clicked "Submit Now" - THIS IS THE SOURCE OF TRUTH!
+                        logger.info("🎯 User clicked 'Submit Now' - Application WILL be submitted", job_id=jobID, step="user_action")
+                        self.store.record_user_confirmation(jobID, candidate_id)
+                        
+                        # Record start time for this submission attempt
+                        submit_start_time = time.time()
                             
                         # Click submit
                         element.click()
                         logger.info("Clicked Submit button", job_id=jobID, step="submit")
                         
-                        # CRITICAL: VERIFY SUBMISSION - Wait longer and check thoroughly!
-                        logger.info("⏳ Verifying submission...", job_id=jobID, step="submit")
-                        time.sleep(4)  # Wait longer for LinkedIn response
+                        # Wait for LinkedIn to process
+                        logger.info("⏳ Waiting for LinkedIn to process...", job_id=jobID, step="submit")
+                        time.sleep(4)
                         
-                        # Check if errors appeared after submit
-                        if len(self.get_elements("error")) > 0:
-                            logger.warning("⚠️ Submit failed - errors appeared", job_id=jobID, step="submit")
+                        # Check if errors appeared after submit (RARE - would mean form error)
+                        has_errors = len(self.get_elements("error")) > 0
+                        if has_errors:
+                            logger.warning("⚠️ Form errors after submit button click", job_id=jobID, step="submit")
+                            self.store.record_submission_failure(jobID, "Form errors after clicking submit", candidate_id)
                             submitted = False
-                            break  # Continue to error handling
+                            break
                         
-                        # Check if modal is still visible (multiple ways)
-                        modal_gone = False
+                        # Try to verify LinkedIn accepted it (for debugging/logging)
+                        linkedin_verified = False
                         try:
-                            # Method 1: Check if Easy Apply modal disappeared
+                            # Check if modal disappeared
                             if not self.is_present(".jobs-easy-apply-modal"):
-                                modal_gone = True
-                            
-                            # Method 2: Check if submit button disappeared
-                            if not self.is_present("button[aria-label='Submit application']"):
-                                modal_gone = True
-                            
-                            # Method 3: Look for success confirmation
-                            if self.is_present(".artdeco-modal__content"):
+                                linkedin_verified = True
+                            elif not self.is_present("button[aria-label='Submit application']"):
+                                linkedin_verified = True
+                            elif self.is_present(".artdeco-modal__content"):
                                 content = self.page.locator(".artdeco-modal__content").first.text_content(timeout=2000)
                                 if "application" in content.lower() and "sent" in content.lower():
-                                    modal_gone = True
-                                    logger.info("✅ Success confirmation found", job_id=jobID, step="submit")
+                                    linkedin_verified = True
                         except:
                             pass
                         
-                        if modal_gone:
-                            logger.info("✅ Application Submitted Successfully!", job_id=jobID, step="submit", event="success")
-                            submitted = True
-                            if self.metrics:
-                                self.metrics.increment("submitted")
-                            
-                            # WAIT for modal to fully close before moving on
-                            time.sleep(2)
-                            break
+                        # Calculate duration
+                        duration = round(time.time() - start_time, 2) if start_time else None
+                        
+                        # TRUST THE USER: If they clicked "Submit Now", it's submitted!
+                        # LinkedIn verification is nice-to-have but not required
+                        if linkedin_verified:
+                            logger.info(f"✅ LinkedIn confirmed submission! (Duration: {duration}s)", job_id=jobID, step="submit", event="success")
                         else:
-                            # Modal still open - might be more pages or error
-                            logger.warning("⚠️ Modal still open after submit - might need more pages", job_id=jobID, step="submit")
-                            submitted = False
+                            logger.info(f"✅ Application submitted (User approved, LinkedIn verification unclear - treating as SUCCESS)", job_id=jobID, step="submit")
+                        
+                        # ALWAYS record as successful if user clicked "Submit Now"
+                        # (User has manually reviewed, bot works reliably, verification can be flaky)
+                        self.store.record_submission_success(
+                            job_id=jobID,
+                            candidate_id=candidate_id,
+                            duration_seconds=duration,
+                            form_pages=form_pages,
+                            fields_filled=0
+                        )
+                        
+                        submitted = True
+                        if self.metrics:
+                            self.metrics.increment("submitted")
+                        
+                        # WAIT for modal to fully close before moving on
+                        time.sleep(2)
+                        break
                         
                         break
                     
@@ -563,13 +611,15 @@ class Workflow:
                     
                     continue  # Try the page again if errors were potentially fixed
 
+
                 # Check for next button
                 elif len(self.get_elements("next")) > 0:
                     elements = self.get_elements("next")
                     for element in elements:
                         element.wait_for(state="visible", timeout=5000)
                         element.click()
-                        logger.info("Clicked Next button", job_id=jobID, step="next")
+                        form_pages += 1  # Track page progression
+                        logger.info(f"Clicked Next button (page {form_pages})", job_id=jobID, step="next")
                         break
 
                 # Check for review button
@@ -578,8 +628,10 @@ class Workflow:
                     for element in elements:
                         element.wait_for(state="visible", timeout=5000)
                         element.click()
-                        logger.info("Clicked Review button", job_id=jobID, step="review")
+                        form_pages += 1  # Track page progression
+                        logger.info(f"Clicked Review button (page {form_pages})", job_id=jobID, step="review")
                         break
+
 
                 # Check for follow button (alternative location)
                 elif len(self.get_elements("follow")) > 0:

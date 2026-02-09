@@ -1,5 +1,6 @@
 import yaml
 import logging
+import time
 from bot.utils.logger import logger
 
 from bot.core.browser import Browser
@@ -255,6 +256,15 @@ if __name__ == '__main__':
         headless=False # Keep visible for now
     )
     page = browser.get_page()
+    
+    # Click center of screen after browser opens (dismiss popups/activate page)
+    logger.info("Waiting 4 seconds before clicking center screen...", step="init")
+    time.sleep(4)
+    viewport_size = page.viewport_size
+    center_x = viewport_size['width'] // 2
+    center_y = viewport_size['height'] // 2
+    page.mouse.click(center_x, center_y)
+    logger.info(f"Clicked center of screen at ({center_x}, {center_y})", step="init")
     
     # Login
     session = Session(page)

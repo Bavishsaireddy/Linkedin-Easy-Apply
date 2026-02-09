@@ -223,3 +223,17 @@ Watch for these key events:
 ---
 
 **Questions?** Check logs or run `python test_smart_filler.py` to test profile matching.
+
+Tracking by candidate name: When you select a candidate in the terminal (like "Ad", "Ja", or "Sh"), all submissions are tracked with that full name.
+
+Check submissions by candidate:
+
+bash
+python check_submissions.py
+
+Shows:
+
+Name    Submitted
+Ad       50
+Ja       30
+Sh       20
