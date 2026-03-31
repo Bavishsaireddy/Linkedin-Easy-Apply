@@ -248,6 +248,7 @@ class Workflow:
                 skipBtn.onmouseleave = () => skipBtn.style.background = '#2a2a2a';
                 
                 proceedBtn.onclick = () => { 
+                    if (window._botClickListener) document.removeEventListener('click', window._botClickListener, true);
                     window.bot_submit_action = 'proceed'; 
                     modal.style.transform = 'translateY(-20px)';
                     modal.style.opacity = '0';
@@ -255,6 +256,7 @@ class Workflow:
                 };
                 
                 skipBtn.onclick = () => { 
+                    if (window._botClickListener) document.removeEventListener('click', window._botClickListener, true);
                     window.bot_submit_action = 'skip'; 
                     modal.style.transform = 'translateY(-20px)';
                     modal.style.opacity = '0';
@@ -274,6 +276,22 @@ class Workflow:
                     modal.style.transform = 'translateY(0)';
                     modal.style.opacity = '1';
                 }, 50);
+                
+                // Fallback listener for manual LinkedIn clicks
+                if (window._botClickListener) document.removeEventListener('click', window._botClickListener, true);
+                window._botClickListener = (e) => {
+                    const btn = e.target.closest('button');
+                    if (btn && !btn.closest('#bot-submission-overlay')) {
+                        if (btn.getAttribute('aria-label') === 'Submit application' || (btn.innerText && btn.innerText.includes('Submit'))) {
+                            if (window._botClickListener) document.removeEventListener('click', window._botClickListener, true);
+                            window.bot_submit_action = 'proceed';
+                            modal.style.transform = 'translateY(-20px)';
+                            modal.style.opacity = '0';
+                            setTimeout(() => overlay.remove(), 400);
+                        }
+                    }
+                };
+                document.addEventListener('click', window._botClickListener, true);
                 
                 window.bot_submit_action = null;
             }""")
@@ -525,9 +543,14 @@ class Workflow:
                         # Record start time for this submission attempt
                         submit_start_time = time.time()
                             
-                        # Click submit
-                        element.click()
-                        logger.info("Clicked Submit button", job_id=jobID, step="submit")
+                        # Click submit (wrapped in try block so manual clicks don't crash)
+                        try:
+                            # Use a short timeout because if the user manually clicked it, it might natively disappear!
+                            if element.is_visible():
+                                element.click(timeout=3000)
+                                logger.info("Clicked native Submit button via Bot", job_id=jobID, step="submit")
+                        except Exception as click_err:
+                            logger.info(f"Submit button non-clickable (likely manually clicked by user)", job_id=jobID, step="submit")
                         
                         # Wait for LinkedIn to process
                         logger.info("⏳ Waiting for LinkedIn to process...", job_id=jobID, step="submit")
