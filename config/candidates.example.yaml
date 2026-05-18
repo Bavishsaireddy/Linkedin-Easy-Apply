@@ -16,22 +16,22 @@ candidates:
       Cover Letter: ./assets/candidates/candidate_001/cover_letter.pdf
     search:
       positions:
-        - "AI Engineer"
-        - "Generative AI Engineer"
-        - "RAG Engineer"
-        - "LLM Engineer"
-        - "Agentic AI Engineer"
-        - "MLOps Engineer"
-        - "AI Infrastructure Engineer"
-        - "Applied AI Scientist"
-        - "AI Solutions Architect"
+      - "AI Engineer"
+      - "Generative AI Engineer"
+      - "RAG Engineer"
+      - "LLM Engineer"
+      - "Agentic AI Engineer"
+      - "MLOps Engineer"
+      - "AI Infrastructure Engineer"
+      - "Applied AI Scientist"
+      - "AI Solutions Architect"
       locations:
-        - "Remote"
+      - "Remote"
       salary: 100000
       rate: 50
       experience_level:
-        - 2
-        - 3
+      - 2
+      - 3
     profile_data:
       full_name: "Full Name"
       email: "your_email@example.com"
